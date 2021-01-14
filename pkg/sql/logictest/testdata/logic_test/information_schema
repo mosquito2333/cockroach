@@ -1651,6 +1651,16 @@ CREATE TABLE t1 (
   FAMILY "primary" (id, name, rowid)
 )
 
+query TTTTT colnames
+SELECT table_catalog, table_schema, table_name, column_name, column_comment
+FROM information_schema.columns
+WHERE table_name = 't1'
+----
+table_catalog  table_schema  table_name  column_name    column_comment
+test           public        t1          id             ·
+test           public        t1          name           ·
+test           public        t1          rowid          ·
+
 statement ok
 COMMENT ON COLUMN public.t1.id IS 'identification'
 
