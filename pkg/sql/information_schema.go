@@ -409,15 +409,15 @@ https://www.postgresql.org/docs/9.5/infoschema-columns.html`,
 			return err
 		}
 		//Push all comments of columns into map.
-		commentMap := make(map[tree.DInt]map[tree.DInt]string)
+		commentMap := make(map[string]map[string]string)
 		for _, comment := range comments {
-			objID := tree.MustBeDInt(comment[0])
-			objSubID := tree.MustBeDInt(comment[1])
+			objID := comment[0].String()
+			objSubID := comment[1].String()
 			description := comment[2].String()
 			commentType := tree.MustBeDInt(comment[3])
 			if commentType == 2 {
 				if commentMap[objID] == nil {
-					commentMap[objID] = make(map[tree.DInt]string)
+					commentMap[objID] = make(map[string]string)
 				}
 				commentMap[objID][objSubID] = description
 			}
@@ -455,8 +455,8 @@ https://www.postgresql.org/docs/9.5/infoschema-columns.html`,
 				}
 
 				//Match the comment belonging to current column from map,using table id and column id
-				tableID := tree.DInt(table.GetID())
-				columnID := tree.DInt(column.ID)
+				tableID := tree.NewDInt(tree.DInt(table.GetID())).String()
+				columnID := tree.NewDInt(tree.DInt(column.ID)).String()
 				description := commentMap[tableID][columnID]
 
 				return addRow(
