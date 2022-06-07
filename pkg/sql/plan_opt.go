@@ -503,37 +503,37 @@ func (opc *optPlanningCtx) buildExecMemo(ctx context.Context) (_ *memo.Memo, _ e
 		memo, err := opc.reuseMemo(prepared.Memo)
 		return memo, err
 	}
-
-	if opc.useCache {
-		// Consult the query cache.
-		cachedData, ok := p.execCfg.QueryCache.Find(&p.queryCacheSession, opc.p.stmt.SQL)
-		if ok {
-			if isStale, err := cachedData.Memo.IsStale(ctx, p.EvalContext(), &opc.catalog); err != nil {
-				return nil, err
-			} else if isStale {
-				cachedData.Memo, err = opc.buildReusableMemo(ctx)
-				if err != nil {
+	/*
+		if opc.useCache {
+			// Consult the query cache.
+			cachedData, ok := p.execCfg.QueryCache.Find(&p.queryCacheSession, opc.p.stmt.SQL)
+			if ok {
+				if isStale, err := cachedData.Memo.IsStale(ctx, p.EvalContext(), &opc.catalog); err != nil {
 					return nil, err
+				} else if isStale {
+					cachedData.Memo, err = opc.buildReusableMemo(ctx)
+					if err != nil {
+						return nil, err
+					}
+					// Update the plan in the cache. If the cache entry had PrepareMetadata
+					// populated, it may no longer be valid.
+					cachedData.PrepareMetadata = nil
+					p.execCfg.QueryCache.Add(&p.queryCacheSession, &cachedData)
+					opc.log(ctx, "query cache hit but needed update")
+					opc.flags.Set(planFlagOptCacheMiss)
+				} else {
+					opc.log(ctx, "query cache hit")
+					opc.flags.Set(planFlagOptCacheHit)
 				}
-				// Update the plan in the cache. If the cache entry had PrepareMetadata
-				// populated, it may no longer be valid.
-				cachedData.PrepareMetadata = nil
-				p.execCfg.QueryCache.Add(&p.queryCacheSession, &cachedData)
-				opc.log(ctx, "query cache hit but needed update")
-				opc.flags.Set(planFlagOptCacheMiss)
-			} else {
-				opc.log(ctx, "query cache hit")
-				opc.flags.Set(planFlagOptCacheHit)
+				memo, err := opc.reuseMemo(cachedData.Memo)
+				return memo, err
 			}
-			memo, err := opc.reuseMemo(cachedData.Memo)
-			return memo, err
+			opc.flags.Set(planFlagOptCacheMiss)
+			opc.log(ctx, "query cache miss")
+		} else {
+			opc.log(ctx, "not using query cache")
 		}
-		opc.flags.Set(planFlagOptCacheMiss)
-		opc.log(ctx, "query cache miss")
-	} else {
-		opc.log(ctx, "not using query cache")
-	}
-
+	*/
 	// We are executing a statement for which there is no reusable memo
 	// available.
 	f := opc.optimizer.Factory()

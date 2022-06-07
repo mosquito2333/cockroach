@@ -28,6 +28,16 @@
 =>
 (Select $input (InlineConstVar $filters))
 
+# InlineInequalityIntervalConstVar inlines variables which are restricted to be
+# interval constant, as in
+#   SELECT * FROM foo WHERE a > b AND b > 10.
+# =>
+#   SELECT * FROM foo WHERE a > b AND b > 10 AND a > 10.
+[InlineVarEqOrGtOrGeConst, Normalize, HighPriority]
+(Select $input:* $filters:* & (CanInlineVarEqOrGtOrGeConst $filters))
+=>
+(Select $input (InlineVarEqOrGtOrGeConst $filters))
+
 # InlineProjectConstants finds variable references in Projections expressions
 # that refer to constant input values, and then inlines those constant values
 # in place of the corresponding variable references. This sometimes allows

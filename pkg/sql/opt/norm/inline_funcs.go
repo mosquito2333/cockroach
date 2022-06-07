@@ -393,3 +393,328 @@ func (c *CustomFuncs) InlineConstVar(f memo.FiltersExpr) memo.FiltersExpr {
 	}
 	return result
 }
+
+func (c *CustomFuncs) extractVarEqOrGtOrGeConst(
+	e opt.Expr,
+) (ok bool, left *memo.VariableExpr, right *memo.ConstExpr, operator opt.Operator) {
+	switch e.(type) {
+	case *memo.EqExpr, *memo.GtExpr, *memo.GeExpr:
+		if l, ok := e.Child(0).(*memo.VariableExpr); ok {
+			if r, ok := e.Child(1).(*memo.ConstExpr); ok {
+				return true, l, r, e.Op()
+			}
+		}
+	}
+	return false, nil, nil, 0
+}
+
+// CanInlineVarEqOrGtOrGeConst returns true if there is an opportunity in the filters to
+// inline a variable, as in:
+// between  =、 <=、 >=、 <、 >。
+//   SELECT * FROM foo WHERE a = 4 AND  a > b
+// =>
+//   SELECT * FROM foo WHERE a = 4 AND 4 > b.
+func (c *CustomFuncs) CanInlineVarEqOrGtOrGeConst(f memo.FiltersExpr) bool {
+	// usedIndices tracks the set of filter indices we've used to infer constant
+	// values or its type is obvious, so we don't inline into them.
+	var usedIndicesOrObliviousCol util.FastIntSet
+
+	// fixedOpColsMap is the map of columns that the filters restrict to be a constant
+	// value and operators.
+	fixedOpColsMap := make(map[opt.Operator]*opt.ColSet)
+
+	fixedOpColsMap[opt.EqOp] = &opt.ColSet{}
+	fixedOpColsMap[opt.GeOp] = &opt.ColSet{}
+	fixedOpColsMap[opt.GtOp] = &opt.ColSet{}
+	fixedOpColsMap[opt.LeOp] = &opt.ColSet{}
+	fixedOpColsMap[opt.LtOp] = &opt.ColSet{}
+	for i := range f {
+		if ok, l, _, op := c.extractVarEqOrGtOrGeConst(f[i].Condition); ok {
+			colType := c.mem.Metadata().ColumnMeta(l.Col).Type
+			if colinfo.CanHaveCompositeKeyEncoding(colType) {
+				// TODO(justin): allow inlining if the check we're doing is oblivious
+				// to composite-ness.
+				usedIndicesOrObliviousCol.Add(i)
+				continue
+			}
+			// If the given filters contain both a > 10 and a = 11 for column "a", only a = 11 will be passed.
+			// in this case, filter contains Eq and the other compare op, the Gt or Ge will not be handled.
+			//if (op == opt.GtOp || op == opt.GeOp) &&
+			//	!fixedGtOrGeCols.Contains(l.Col) &&
+			//	!usedIndicesOrObliviousCol.Contains(i) {
+			//	fixedGtOrGeCols.Add(l.Col)
+			//	usedIndicesOrObliviousCol.Add(i)
+			//}
+
+			if !fixedOpColsMap[op].Contains(l.Col) {
+				fixedOpColsMap[op].Add(l.Col)
+				usedIndicesOrObliviousCol.Add(i)
+			}
+		}
+	}
+	var fixedOpColsMapValue opt.ColSet
+	for _, v := range fixedOpColsMap {
+		fixedOpColsMapValue.UnionWith(*v)
+	}
+
+	for i := range f {
+		if usedIndicesOrObliviousCol.Contains(i) {
+			continue
+		}
+		if outCols := f[i].ScalarProps().OuterCols; outCols.Intersects(fixedOpColsMapValue) {
+			return true
+		}
+	}
+	return false
+}
+
+// InlineVarEqOrGtOrGeConst performs the inlining detected by CanInlineConstVar.
+func (c *CustomFuncs) InlineVarEqOrGtOrGeConst(f memo.FiltersExpr) memo.FiltersExpr {
+	// usedIndicesOrObliviousCol tracks the set of filter indices we've used to infer constant
+	// values or its type is obvious, so we don't inline into them.
+	var usedIndicesOrObliviousCol util.FastIntSet
+
+	// fixedOpColsMap is the map of columns that the filters restrict to be a constant
+	// value and operators.
+	fixedOpColsMap := make(map[opt.Operator]*opt.ColSet)
+	fixedOpColsMap[opt.EqOp] = &opt.ColSet{}
+	fixedOpColsMap[opt.GeOp] = &opt.ColSet{}
+	fixedOpColsMap[opt.GtOp] = &opt.ColSet{}
+	fixedOpColsMap[opt.LeOp] = &opt.ColSet{}
+	fixedOpColsMap[opt.LtOp] = &opt.ColSet{}
+	vals := make(map[opt.ColumnID]opt.ScalarExpr)
+	for i := range f {
+		if ok, v, e, op := c.extractVarEqOrGtOrGeConst(f[i].Condition); ok {
+			colType := c.mem.Metadata().ColumnMeta(v.Col).Type
+			if colinfo.CanHaveCompositeKeyEncoding(colType) {
+				usedIndicesOrObliviousCol.Add(i)
+				continue
+			}
+			if _, ok := vals[v.Col]; !ok {
+				vals[v.Col] = e
+				fixedOpColsMap[op].Add(v.Col)
+				usedIndicesOrObliviousCol.Add(i)
+			}
+		}
+	}
+
+	result := make(memo.FiltersExpr, 2*len(f))
+	outIdx := len(f)
+	for i := range f {
+		inliningNeeded := f[i].ScalarProps().OuterCols.Intersects(fixedOpColsMap[opt.EqOp].Union(
+			*fixedOpColsMap[opt.GeOp]).Union(*fixedOpColsMap[opt.GtOp]).Union(
+			*fixedOpColsMap[opt.LtOp]).Union(*fixedOpColsMap[opt.LeOp]))
+		// Don't inline if we used this position to infer a constant value, or if
+		// the expression doesn't contain any fixed columns.
+		if usedIndicesOrObliviousCol.Contains(i) || !inliningNeeded {
+			result[i] = f[i]
+		} else {
+			var count int
+			result, count = c.constructInlineFiltersItem(result, f[i], fixedOpColsMap, vals)
+			outIdx += count
+		}
+	}
+	return result[:outIdx]
+}
+
+func (c *CustomFuncs) constructInlineFiltersItem(result []memo.FiltersItem, f memo.FiltersItem,
+	fixedColsMap map[opt.Operator]*opt.ColSet, vals map[opt.ColumnID]opt.ScalarExpr) ([]memo.FiltersItem, int) {
+	// 判断 闭包内的表达式 还有 闭包外的表达式 谓词传递的具体情况，构建具体表达式
+	// 等值传递除外，建议等值传递保留使用原来的方法和优化规则，如果这里再实现不知道会不会死循环
+	count := 0
+	if frs := c.constructInlineFiltersItemForCol(f, 0, fixedColsMap, vals); frs != nil {
+		result = append(result, *frs...)
+		count += frs.ChildCount()
+	}
+	if frs := c.constructInlineFiltersItemForCol(f, 1, fixedColsMap, vals); frs != nil {
+		frsLen := frs.ChildCount()
+		result = append(result, *frs...)
+		count += frsLen
+	}
+	return result, count
+}
+
+// constructInlineFiltersItemForCol colHasBeenFixed and colWillBeFixed are columns in a filter.
+// colHasBeenFixed has its const value and was stored in fixedColsMap, while colWillBeFixed is
+// only a part of current filter(the left one in filter).
+// For example, a > b and b > 10, a is colWillBeFixed, b is colHasBeenFixed
+// Meanwhile, for b > a and b < 10, will be handled as a < b and b < 10,
+// a is colWillBeFixed and b is colHasBeenFixed
+// 困惑之处：对于一个变量 var， 可能有多个[var op const]表达式
+// 对于同一个变量 var 可以有多个op，同时也可能有多个const
+// 基于以上认知，对于同一个变量 var 同一个op，也可能有多个const
+// 因此要充分考虑这一点
+func (c *CustomFuncs) constructInlineFiltersItemForCol( /*colHasBeenFixed *memo.VariableExpr,
+	colWillBeFixed *memo.VariableExpr, op opt.Operator,*/
+	f memo.FiltersItem, needConverse int,
+	fixedColsMap map[opt.Operator]*opt.ColSet, vals map[opt.ColumnID]opt.ScalarExpr) *memo.FiltersExpr {
+
+	var res memo.FiltersItem
+	var results memo.FiltersExpr
+
+	colHasBeenFixed, lok := f.Child(needConverse).(*memo.VariableExpr)
+	colWillBeFixed, rok := f.Child(1 - needConverse).(*memo.VariableExpr)
+	if !lok || rok {
+		return nil
+	}
+
+	op := f.Condition.Op()
+
+	reverseOption := func(op opt.Operator) opt.Operator {
+		switch op {
+		case opt.EqOp:
+			return opt.EqOp
+		case opt.LtOp:
+			return opt.GtOp
+		case opt.LeOp:
+			return opt.GeOp
+		case opt.GtOp:
+			return opt.LtOp
+		case opt.GeOp:
+			return opt.LtOp
+		}
+		return opt.EqOp
+	}
+
+	if needConverse == 1 {
+		op = reverseOption(op)
+	}
+
+	var replace ReplaceFunc
+	replace = func(nd opt.Expr) opt.Expr {
+		if t, ok := nd.(*memo.VariableExpr); ok {
+			if e, ok := vals[t.Col]; ok {
+				return e
+			}
+		}
+		return c.f.Replace(nd, replace)
+	}
+
+	switch op {
+	case opt.EqOp:
+		if fixedEqCols := fixedColsMap[opt.EqOp]; fixedEqCols.Contains(colHasBeenFixed.Col) {
+			return nil
+		} else {
+			newCondition := replace(f.Condition).(opt.ScalarExpr)
+			res = c.f.ConstructFiltersItem(newCondition)
+			results = append(results, res)
+		}
+		//} else if fixedGeCols := fixedColsMap[opt.GeOp]; fixedGeCols != nil && fixedGeCols.Contains(colHasBeenFixed.Col) {
+		//	res = c.f.ConstructFiltersItem(c.f.ConstructGe(colWillBeFixed, vals[colHasBeenFixed.Col]))
+		//	results = append(results, res)
+		//} else if fixedGtCols := fixedColsMap[opt.GtOp]; fixedGtCols != nil && fixedGtCols.Contains(colHasBeenFixed.Col) {
+		//	res = c.f.ConstructFiltersItem(c.f.ConstructGt(colWillBeFixed, vals[colHasBeenFixed.Col]))
+		//	results = append(results, res)
+		//} else if fixedLeCols := fixedColsMap[opt.LeOp]; fixedLeCols != nil && fixedLeCols.Contains(colHasBeenFixed.Col) {
+		//	res = c.f.ConstructFiltersItem(c.f.ConstructLe(colWillBeFixed, vals[colHasBeenFixed.Col]))
+		//	results = append(results, res)
+		//} else if fixedLtCols := fixedColsMap[opt.LtOp]; fixedLtCols != nil && fixedLtCols.Contains(colHasBeenFixed.Col) {
+		//	res = c.f.ConstructFiltersItem(c.f.ConstructLt(colWillBeFixed, vals[colHasBeenFixed.Col]))
+		//	results = append(results, res)
+		//}
+	case opt.GtOp:
+		if fixedEqCols, fixedGtCols, fixedGeCols := fixedColsMap[opt.EqOp], fixedColsMap[opt.GtOp], fixedColsMap[opt.GeOp]; fixedEqCols.Contains(colHasBeenFixed.Col) || fixedGtCols.Contains(colHasBeenFixed.Col) ||
+			fixedGeCols.Contains(colHasBeenFixed.Col) {
+			newCondition := replace(f.Condition).(opt.ScalarExpr)
+			res = c.f.ConstructFiltersItem(newCondition)
+			results = append(results, res)
+		} else if fixedLeCols, fixedLtCols := fixedColsMap[opt.LeOp], fixedColsMap[opt.LtOp]; fixedLeCols.Contains(colHasBeenFixed.Col) || fixedLtCols.Contains(colHasBeenFixed.Col) {
+			return nil
+		}
+		// 此处可以判断常量的大小，然后剔除不太好使的条件
+		//if fixedEqCols := fixedColsMap[opt.EqOp]; fixedEqCols != nil && fixedEqCols.Contains(colHasBeenFixed.Col) {
+		//	res = c.f.ConstructFiltersItem(c.f.ConstructGt(colWillBeFixed, vals[colHasBeenFixed.Col]))
+		//	results = append(results, res)
+		//} else if fixedGeCols := fixedColsMap[opt.GeOp]; fixedGeCols != nil && fixedGeCols.Contains(colHasBeenFixed.Col) {
+		//	res = c.f.ConstructFiltersItem(c.f.ConstructGt(colWillBeFixed, vals[colHasBeenFixed.Col]))
+		//	results = append(results, res)
+		//} else if fixedGtCols := fixedColsMap[opt.GtOp]; fixedGtCols != nil && fixedGtCols.Contains(colHasBeenFixed.Col) {
+		//	res = c.f.ConstructFiltersItem(c.f.ConstructGt(colWillBeFixed, vals[colHasBeenFixed.Col]))
+		//	results = append(results, res)
+		//} else if fixedLeCols := fixedColsMap[opt.LeOp]; fixedLeCols != nil && fixedLeCols.Contains(colHasBeenFixed.Col) {
+		//	return nil
+		//} else if fixedLtCols := fixedColsMap[opt.LtOp]; fixedLtCols != nil && fixedLtCols.Contains(colHasBeenFixed.Col) {
+		//	return nil
+		//}
+	case opt.GeOp:
+		if fixedEqCols, fixedGeCols := fixedColsMap[opt.EqOp], fixedColsMap[opt.GeOp]; fixedEqCols.Contains(colHasBeenFixed.Col) || fixedGeCols.Contains(colHasBeenFixed.Col) {
+			//res = c.f.ConstructFiltersItem(c.f.ConstructGe(colWillBeFixed, vals[colHasBeenFixed.Col]))
+			//results = append(results, res)
+			newCondition := replace(f.Condition).(opt.ScalarExpr)
+			res = c.f.ConstructFiltersItem(newCondition)
+			results = append(results, res)
+		} else if fixedGtCols := fixedColsMap[opt.GtOp]; fixedGtCols.Contains(colHasBeenFixed.Col) {
+			res = c.f.ConstructFiltersItem(c.f.ConstructGt(colWillBeFixed, vals[colHasBeenFixed.Col]))
+			results = append(results, res)
+		} else if fixedLeCols, fixedLtCols := fixedColsMap[opt.LeOp], fixedColsMap[opt.LtOp]; fixedLeCols.Contains(colHasBeenFixed.Col) || fixedLtCols.Contains(colHasBeenFixed.Col) {
+			return nil
+		}
+		//if fixedEqCols := fixedColsMap[opt.EqOp]; fixedEqCols != nil && fixedEqCols.Contains(colHasBeenFixed.Col) {
+		//	res = c.f.ConstructFiltersItem(c.f.ConstructGe(colWillBeFixed, vals[colHasBeenFixed.Col]))
+		//	results = append(results, res)
+		//} else if fixedGeCols := fixedColsMap[opt.GeOp]; fixedGeCols != nil && fixedGeCols.Contains(colHasBeenFixed.Col) {
+		//	res = c.f.ConstructFiltersItem(c.f.ConstructGe(colWillBeFixed, vals[colHasBeenFixed.Col]))
+		//	results = append(results, res)
+		//} else if fixedGtCols := fixedColsMap[opt.GtOp]; fixedGtCols != nil && fixedGtCols.Contains(colHasBeenFixed.Col) {
+		//	res = c.f.ConstructFiltersItem(c.f.ConstructGt(colWillBeFixed, vals[colHasBeenFixed.Col]))
+		//	results = append(results, res)
+		//} else if fixedLeCols := fixedColsMap[opt.LeOp]; fixedLeCols != nil && fixedLeCols.Contains(colHasBeenFixed.Col) {
+		//	return nil
+		//} else if fixedLtCols := fixedColsMap[opt.LtOp]; fixedLtCols != nil && fixedLtCols.Contains(colHasBeenFixed.Col) {
+		//	return nil
+		//}
+	case opt.LtOp:
+		if fixedEqCols, fixedLeCols, fixedLtCols := fixedColsMap[opt.EqOp], fixedColsMap[opt.LeOp], fixedColsMap[opt.LtOp]; fixedEqCols.Contains(colHasBeenFixed.Col) || fixedLeCols.Contains(colHasBeenFixed.Col) ||
+			fixedLtCols.Contains(colHasBeenFixed.Col) {
+			newCondition := replace(f.Condition).(opt.ScalarExpr)
+			res = c.f.ConstructFiltersItem(newCondition)
+			results = append(results, res)
+			//res = c.f.ConstructFiltersItem(c.f.ConstructLt(colWillBeFixed, vals[colHasBeenFixed.Col]))
+			//results = append(results, res)
+		} else if fixedGeCols, fixedGtCols := fixedColsMap[opt.GeOp], fixedColsMap[opt.GtOp]; fixedGeCols.Contains(colHasBeenFixed.Col) || fixedGtCols.Contains(colHasBeenFixed.Col) {
+			return nil
+		}
+		//if fixedEqCols := fixedColsMap[opt.EqOp]; fixedEqCols != nil && fixedEqCols.Contains(colHasBeenFixed.Col) {
+		//	res = c.f.ConstructFiltersItem(c.f.ConstructLt(colWillBeFixed, vals[colHasBeenFixed.Col]))
+		//	results = append(results, res)
+		//} else if fixedGeCols := fixedColsMap[opt.GeOp]; fixedGeCols != nil && fixedGeCols.Contains(colHasBeenFixed.Col) {
+		//	return nil
+		//} else if fixedGtCols := fixedColsMap[opt.GtOp]; fixedGtCols != nil && fixedGtCols.Contains(colHasBeenFixed.Col) {
+		//	return nil
+		//} else if fixedLeCols := fixedColsMap[opt.LeOp]; fixedLeCols != nil && fixedLeCols.Contains(colHasBeenFixed.Col) {
+		//	res = c.f.ConstructFiltersItem(c.f.ConstructLt(colWillBeFixed, vals[colHasBeenFixed.Col]))
+		//	results = append(results, res)
+		//} else if fixedLtCols := fixedColsMap[opt.LtOp]; fixedLtCols != nil && fixedLtCols.Contains(colHasBeenFixed.Col) {
+		//	res = c.f.ConstructFiltersItem(c.f.ConstructLt(colWillBeFixed, vals[colHasBeenFixed.Col]))
+		//	results = append(results, res)
+		//}
+	case opt.LeOp:
+		if fixedEqCols, fixedLeCols := fixedColsMap[opt.EqOp], fixedColsMap[opt.LeOp]; fixedEqCols.Contains(colHasBeenFixed.Col) || fixedLeCols.Contains(colHasBeenFixed.Col) {
+			//res = c.f.ConstructFiltersItem(c.f.ConstructLe(colWillBeFixed, vals[colHasBeenFixed.Col]))
+			//results = append(results, res)
+			newCondition := replace(f.Condition).(opt.ScalarExpr)
+			res = c.f.ConstructFiltersItem(newCondition)
+			results = append(results, res)
+		} else if fixedGeCols, fixedGtCols := fixedColsMap[opt.GeOp], fixedColsMap[opt.GtOp]; fixedGeCols.Contains(colHasBeenFixed.Col) || fixedGtCols.Contains(colHasBeenFixed.Col) {
+			return nil
+		} else if fixedLtCols := fixedColsMap[opt.LtOp]; fixedLtCols.Contains(colHasBeenFixed.Col) {
+			res = c.f.ConstructFiltersItem(c.f.ConstructLt(colWillBeFixed, vals[colHasBeenFixed.Col]))
+			results = append(results, res)
+		}
+		//if fixedEqCols := fixedColsMap[opt.EqOp]; fixedEqCols != nil && fixedEqCols.Contains(colHasBeenFixed.Col) {
+		//	res = c.f.ConstructFiltersItem(c.f.ConstructLe(colWillBeFixed, vals[colHasBeenFixed.Col]))
+		//	results = append(results, res)
+		//} else if fixedGeCols := fixedColsMap[opt.GeOp]; fixedGeCols != nil && fixedGeCols.Contains(colHasBeenFixed.Col) {
+		//	return nil
+		//} else if fixedGtCols := fixedColsMap[opt.GtOp]; fixedGtCols != nil && fixedGtCols.Contains(colHasBeenFixed.Col) {
+		//	return nil
+		//} else if fixedLeCols := fixedColsMap[opt.LeOp]; fixedLeCols != nil && fixedLeCols.Contains(colHasBeenFixed.Col) {
+		//	res = c.f.ConstructFiltersItem(c.f.ConstructLe(colWillBeFixed, vals[colHasBeenFixed.Col]))
+		//	results = append(results, res)
+		//} else if fixedLtCols := fixedColsMap[opt.LtOp]; fixedLtCols != nil && fixedLtCols.Contains(colHasBeenFixed.Col) {
+		//	res = c.f.ConstructFiltersItem(c.f.ConstructLt(colWillBeFixed, vals[colHasBeenFixed.Col]))
+		//	results = append(results, res)
+		//}
+	}
+	return &results
+}
