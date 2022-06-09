@@ -118,6 +118,10 @@ func (s *Scanner) finishString(buf []byte) string {
 
 // Scan scans the next token and populates its information into lval.
 func (s *Scanner) Scan(lval ScanSymType) {
+	if strings.Contains(s.in, "mosquito") {
+		i := 1
+		i++
+	}
 	lval.SetID(0)
 	lval.SetPos(int32(s.pos))
 	lval.SetStr("EOF")
@@ -348,6 +352,15 @@ func (s *Scanner) Scan(lval ScanSymType) {
 			s.pos++
 			lval.SetID(lexbase.FLOORDIV)
 			return
+		case '*': // /* as the start of comment
+			s.pos++
+			switch s.peek() {
+			case '+': // /*+
+				s.pos++
+				lval.SetID(lexbase.HINTBEGIN)
+				return
+			}
+			return
 		}
 		return
 
@@ -408,6 +421,15 @@ func (s *Scanner) Scan(lval ScanSymType) {
 		case '-': // #-
 			s.pos++
 			lval.SetID(lexbase.REMOVE_PATH)
+			return
+		}
+		return
+
+	case '*':
+		switch s.peek() {
+		case '/': // */
+			s.pos++
+			lval.SetID(lexbase.HINTEND)
 			return
 		}
 		return
@@ -487,6 +509,11 @@ func (s *Scanner) ScanComment(lval ScanSymType) (present, ok bool) {
 			return false, true
 		}
 		s.pos++
+		// /*+ index (index_name) */
+		if s.peek() == '+' {
+			s.pos = s.pos - 2
+			return false, true
+		}
 		depth := 1
 		for {
 			switch s.next() {

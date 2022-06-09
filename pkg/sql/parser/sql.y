@@ -835,7 +835,7 @@ func (u *sqlSymUnion) asTenantClause() tree.TenantID {
 %token <str> GEOMETRYCOLLECTION GEOMETRYCOLLECTIONM GEOMETRYCOLLECTIONZ GEOMETRYCOLLECTIONZM
 %token <str> GLOBAL GOAL GRANT GRANTS GREATEST GROUP GROUPING GROUPS
 
-%token <str> HAVING HASH HEADER HIGH HISTOGRAM HOLD HOUR
+%token <str> HAVING HASH HEADER HIGH HISTOGRAM HINTBEGIN HINTEND HOLD HOUR
 
 %token <str> IDENTITY
 %token <str> IF IFERROR IFNULL IGNORE_FOREIGN_KEYS ILIKE IMMEDIATE IMPORT IN INCLUDE
@@ -10682,6 +10682,10 @@ opt_index_flags:
   {
     $$.val = &tree.IndexFlags{Index: tree.UnrestrictedName($2)}
   }
+| HINTBEGIN INDEX '(' table_name index_name ')' HINTEND
+    {
+      $$.val = &tree.IndexFlags{Index: tree.UnrestrictedName($5)}
+    }
 | '@' '[' iconst64 ']'
   {
     $$.val = &tree.IndexFlags{IndexID: tree.IndexID($3.int64())}
@@ -10698,6 +10702,16 @@ opt_index_flags:
   {
     $$.val = (*tree.IndexFlags)(nil)
   }
+//
+//opt_oracle_index_flags:
+//  INDEX '(' table_name index_name ')'
+//  {
+//    $$.val = &tree.IndexFlags{Index: tree.UnrestrictedName($4)}
+//  }
+//| /* EMPTY */
+//  {
+//    $$.val = (*tree.IndexFlags)(nil)
+//  }
 
 // %Help: <SOURCE> - define a data source for SELECT
 // %Category: DML
@@ -13890,6 +13904,9 @@ column_path_with_star:
 func_name:
   type_function_name
   {
+		if strings.ToLower($1) == "listagg" {
+      $1 = "STRING_AGG"
+    }
     $$.val = &tree.UnresolvedName{NumParts:1, Parts: tree.NameParts{$1}}
   }
 | prefixed_column_path
@@ -14576,6 +14593,8 @@ reserved_keyword:
 | GRANT
 | GROUP
 | HAVING
+| HINTBEGIN
+| HINTEND
 | IN
 | INITIALLY
 | INTERSECT
