@@ -398,7 +398,7 @@ func (c *CustomFuncs) extractVarEqOrGtOrGeConst(
 	e opt.Expr,
 ) (ok bool, left *memo.VariableExpr, right *memo.ConstExpr, operator opt.Operator) {
 	switch t := e.(type) {
-	case *memo.EqExpr, *memo.GtExpr, *memo.GeExpr, *memo.LtExpr, *memo.LeExpr:
+	case *memo.GtExpr, *memo.GeExpr, *memo.LtExpr, *memo.LeExpr:
 		if l, ok := e.Child(0).(*memo.VariableExpr); ok {
 			if r, ok := e.Child(1).(*memo.ConstExpr); ok {
 				return true, l, r, e.Op()
@@ -429,7 +429,6 @@ func (c *CustomFuncs) CanInlineVarEqOrGtOrGeConst(f memo.FiltersExpr) bool {
 	// fixedOpColsMap is the map of columns that the filters restrict to be a constant
 	// value and operators.
 	fixedOpColsMap := make(map[opt.Operator]*opt.ColSet)
-	fixedOpColsMap[opt.EqOp] = &opt.ColSet{}
 	fixedOpColsMap[opt.GeOp] = &opt.ColSet{}
 	fixedOpColsMap[opt.GtOp] = &opt.ColSet{}
 	fixedOpColsMap[opt.LeOp] = &opt.ColSet{}
@@ -466,12 +465,12 @@ func (c *CustomFuncs) CanInlineVarEqOrGtOrGeConst(f memo.FiltersExpr) bool {
 			continue
 		}
 		// 这种判断有缺陷，如果 a > b and a > 9 and b > 10, 不对 a > b 做处理，这种是没问题的
-		// 但是如果出现 a > b and c > b and b < 10 and c = 9, 对 c > b
+		// 但是如果出现 a > b and c > b and b < 10 and c < 9, 对 c > b
 		// 这个表达式就会不做处理了，但是事实上应该为闭包增加传递 b < 9。
 		if outCols := f[i].ScalarProps().OuterCols; outCols.SubsetOf(fixedOpColsMapValue) {
 			continue
 		}
-		if outCols := f[i].ScalarProps().OuterCols; outCols.Intersects(fixedOpColsMapValue) {
+		if inliningNeeded {
 			return true
 		}
 	}
@@ -487,7 +486,6 @@ func (c *CustomFuncs) InlineVarEqOrGtOrGeConst(f memo.FiltersExpr) memo.FiltersE
 	// fixedOpColsMap is the map of columns that the filters restrict to be a constant
 	// value and operators.
 	fixedOpColsMap := make(map[opt.Operator]*opt.ColSet)
-	fixedOpColsMap[opt.EqOp] = &opt.ColSet{}
 	fixedOpColsMap[opt.GeOp] = &opt.ColSet{}
 	fixedOpColsMap[opt.GtOp] = &opt.ColSet{}
 	fixedOpColsMap[opt.LeOp] = &opt.ColSet{}
@@ -523,10 +521,14 @@ func (c *CustomFuncs) InlineVarEqOrGtOrGeConst(f memo.FiltersExpr) memo.FiltersE
 			continue
 		} else if outCols := f[i].ScalarProps().OuterCols; outCols.SubsetOf(fixedOpColsMapValue) {
 			continue
-		} else {
+		}
+		if inliningNeeded {
 			rfs := c.constructInlineFiltersItem(f[i], fixedOpColsMap, vals)
 			result = append(result, rfs...)
 		}
+	}
+	if c.CanInlineVarEqOrGtOrGeConst(result) {
+		c.InlineVarEqOrGtOrGeConst(result)
 	}
 	return result
 }
@@ -583,7 +585,7 @@ func (c *CustomFuncs) constructInlineFiltersItemForCol(
 		case opt.GeOp:
 			return opt.LtOp
 		}
-		return opt.EqOp
+		return op
 	}
 
 	if needConverse == 1 {
@@ -604,15 +606,11 @@ func (c *CustomFuncs) constructInlineFiltersItemForCol(
 	// We can also use another rule to implement it, more appropriately.
 	switch op {
 	case opt.EqOp:
-		//if fixedEqCols := fixedColsMap[opt.EqOp]; fixedEqCols.Contains(colHasBeenFixed.Col) {
-		//	return nil
-		//} else {
 		newCondition := replace(f.Condition).(opt.ScalarExpr)
 		res = c.f.ConstructFiltersItem(newCondition)
 		results = append(results, res)
-		//}
 	case opt.GtOp:
-		if fixedEqCols, fixedGtCols, fixedGeCols := fixedColsMap[opt.EqOp], fixedColsMap[opt.GtOp], fixedColsMap[opt.GeOp]; fixedEqCols.Contains(colHasBeenFixed.Col) || fixedGtCols.Contains(colHasBeenFixed.Col) ||
+		if fixedGtCols, fixedGeCols := fixedColsMap[opt.GtOp], fixedColsMap[opt.GeOp]; fixedGtCols.Contains(colHasBeenFixed.Col) ||
 			fixedGeCols.Contains(colHasBeenFixed.Col) {
 			res = c.f.ConstructFiltersItem(c.f.ConstructGt(colWillBeFixed, vals[colHasBeenFixed.Col]))
 			results = append(results, res)
@@ -620,7 +618,7 @@ func (c *CustomFuncs) constructInlineFiltersItemForCol(
 			return nil
 		}
 	case opt.GeOp:
-		if fixedEqCols, fixedGeCols := fixedColsMap[opt.EqOp], fixedColsMap[opt.GeOp]; fixedEqCols.Contains(colHasBeenFixed.Col) || fixedGeCols.Contains(colHasBeenFixed.Col) {
+		if fixedGeCols := fixedColsMap[opt.GeOp]; fixedGeCols.Contains(colHasBeenFixed.Col) {
 			res = c.f.ConstructFiltersItem(c.f.ConstructGe(colWillBeFixed, vals[colHasBeenFixed.Col]))
 			results = append(results, res)
 		} else if fixedGtCols := fixedColsMap[opt.GtOp]; fixedGtCols.Contains(colHasBeenFixed.Col) {
@@ -630,7 +628,7 @@ func (c *CustomFuncs) constructInlineFiltersItemForCol(
 			return nil
 		}
 	case opt.LtOp:
-		if fixedEqCols, fixedLeCols, fixedLtCols := fixedColsMap[opt.EqOp], fixedColsMap[opt.LeOp], fixedColsMap[opt.LtOp]; fixedEqCols.Contains(colHasBeenFixed.Col) || fixedLeCols.Contains(colHasBeenFixed.Col) ||
+		if fixedLeCols, fixedLtCols := fixedColsMap[opt.LeOp], fixedColsMap[opt.LtOp]; fixedLeCols.Contains(colHasBeenFixed.Col) ||
 			fixedLtCols.Contains(colHasBeenFixed.Col) {
 			res = c.f.ConstructFiltersItem(c.f.ConstructLt(colWillBeFixed, vals[colHasBeenFixed.Col]))
 			results = append(results, res)
@@ -638,7 +636,7 @@ func (c *CustomFuncs) constructInlineFiltersItemForCol(
 			return nil
 		}
 	case opt.LeOp:
-		if fixedEqCols, fixedLeCols := fixedColsMap[opt.EqOp], fixedColsMap[opt.LeOp]; fixedEqCols.Contains(colHasBeenFixed.Col) || fixedLeCols.Contains(colHasBeenFixed.Col) {
+		if fixedLeCols := fixedColsMap[opt.LeOp]; fixedLeCols.Contains(colHasBeenFixed.Col) {
 			res = c.f.ConstructFiltersItem(c.f.ConstructLe(colWillBeFixed, vals[colHasBeenFixed.Col]))
 			results = append(results, res)
 		} else if fixedGeCols, fixedGtCols := fixedColsMap[opt.GeOp], fixedColsMap[opt.GtOp]; fixedGeCols.Contains(colHasBeenFixed.Col) || fixedGtCols.Contains(colHasBeenFixed.Col) {
