@@ -371,6 +371,7 @@ func (c *CustomFuncs) EnsureKey(in memo.RelExpr) memo.RelExpr {
 		return res
 	}
 
+	// mosquito : ordinality
 	// Otherwise, wrap the input in an Ordinality operator.
 	colID := c.f.Metadata().AddColumn("rownum", types.Int)
 	private := memo.OrdinalityPrivate{ColID: colID}

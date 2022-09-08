@@ -217,6 +217,7 @@ var AggregateOpReverseMap = map[Operator]string{
 	JsonObjectAggOp:       "json_object_agg",
 	JsonbObjectAggOp:      "jsonb_object_agg",
 	StringAggOp:           "string_agg",
+	ListAggOp:             "list_agg",
 	ConstAggOp:            "any_not_null",
 	ConstNotNullAggOp:     "any_not_null",
 	AnyNotNullAggOp:       "any_not_null",
@@ -322,7 +323,7 @@ func AggregateIgnoresNulls(op Operator) bool {
 
 	case AnyNotNullAggOp, AvgOp, BitAndAggOp, BitOrAggOp, BoolAndOp, BoolOrOp,
 		ConstNotNullAggOp, CorrOp, CountOp, MaxOp, MinOp, SqrDiffOp, StdDevOp,
-		StringAggOp, SumOp, SumIntOp, VarianceOp, XorAggOp, PercentileDiscOp,
+		StringAggOp, ListAggOp, SumOp, SumIntOp, VarianceOp, XorAggOp, PercentileDiscOp,
 		PercentileContOp, STMakeLineOp, STCollectOp, STExtentOp, STUnionOp, StdDevPopOp,
 		VarPopOp, CovarPopOp, CovarSampOp, RegressionAvgXOp, RegressionAvgYOp,
 		RegressionInterceptOp, RegressionR2Op, RegressionSlopeOp, RegressionSXXOp,
@@ -347,7 +348,7 @@ func AggregateIsNullOnEmpty(op Operator) bool {
 	case AnyNotNullAggOp, ArrayAggOp, AvgOp, BitAndAggOp,
 		BitOrAggOp, BoolAndOp, BoolOrOp, ConcatAggOp, ConstAggOp,
 		ConstNotNullAggOp, CorrOp, FirstAggOp, JsonAggOp, JsonbAggOp,
-		MaxOp, MinOp, SqrDiffOp, StdDevOp, STMakeLineOp, StringAggOp, SumOp, SumIntOp,
+		MaxOp, MinOp, SqrDiffOp, StdDevOp, STMakeLineOp, StringAggOp, ListAggOp, SumOp, SumIntOp,
 		VarianceOp, XorAggOp, PercentileDiscOp, PercentileContOp,
 		JsonObjectAggOp, JsonbObjectAggOp, StdDevPopOp, STCollectOp, STExtentOp, STUnionOp,
 		VarPopOp, CovarPopOp, CovarSampOp, RegressionAvgXOp, RegressionAvgYOp,
@@ -377,7 +378,7 @@ func AggregateIsNeverNullOnNonNullInput(op Operator) bool {
 		BitOrAggOp, BoolAndOp, BoolOrOp, ConcatAggOp, ConstAggOp,
 		ConstNotNullAggOp, CountOp, CountRowsOp, FirstAggOp,
 		JsonAggOp, JsonbAggOp, MaxOp, MinOp, SqrDiffOp, STMakeLineOp,
-		StringAggOp, SumOp, SumIntOp, XorAggOp, PercentileDiscOp, PercentileContOp,
+		StringAggOp, ListAggOp, SumOp, SumIntOp, XorAggOp, PercentileDiscOp, PercentileContOp,
 		JsonObjectAggOp, JsonbObjectAggOp, StdDevPopOp, STCollectOp, STExtentOp, STUnionOp,
 		VarPopOp, CovarPopOp, RegressionAvgXOp, RegressionAvgYOp, RegressionSXXOp,
 		RegressionSXYOp, RegressionSYYOp, RegressionCountOp:
@@ -432,7 +433,7 @@ func AggregatesCanMerge(inner, outer Operator) bool {
 
 	case ArrayAggOp, AvgOp, ConcatAggOp, CorrOp, JsonAggOp, JsonbAggOp,
 		JsonObjectAggOp, JsonbObjectAggOp, PercentileContOp, PercentileDiscOp,
-		SqrDiffOp, STCollectOp, StdDevOp, StringAggOp, VarianceOp, StdDevPopOp,
+		SqrDiffOp, STCollectOp, StdDevOp, StringAggOp, ListAggOp, VarianceOp, StdDevPopOp,
 		VarPopOp, CovarPopOp, CovarSampOp, RegressionAvgXOp, RegressionAvgYOp,
 		RegressionInterceptOp, RegressionR2Op, RegressionSlopeOp, RegressionSXXOp,
 		RegressionSXYOp, RegressionSYYOp, RegressionCountOp:
@@ -453,7 +454,7 @@ func AggregateIgnoresDuplicates(op Operator) bool {
 
 	case ArrayAggOp, AvgOp, ConcatAggOp, CountOp, CorrOp, CountRowsOp, SumIntOp,
 		SumOp, SqrDiffOp, VarianceOp, StdDevOp, XorAggOp, JsonAggOp, JsonbAggOp,
-		StringAggOp, PercentileDiscOp, PercentileContOp, StdDevPopOp, STMakeLineOp,
+		StringAggOp, ListAggOp, PercentileDiscOp, PercentileContOp, StdDevPopOp, STMakeLineOp,
 		VarPopOp, JsonObjectAggOp, JsonbObjectAggOp, STCollectOp, CovarPopOp,
 		CovarSampOp, RegressionAvgXOp, RegressionAvgYOp, RegressionInterceptOp,
 		RegressionR2Op, RegressionSlopeOp, RegressionSXXOp, RegressionSXYOp,

@@ -12,6 +12,8 @@ package colfetcher
 
 import (
 	"context"
+	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -104,6 +106,12 @@ func (s *ColBatchScan) Init(ctx context.Context) {
 
 // Next is part of the Operator interface.
 func (s *ColBatchScan) Next() coldata.Batch {
+	//debug start
+	t_name := s.cf.table.cFetcherTableArgs.spec.TableName
+	if strings.Contains(t_name, "accounts") {
+		fmt.Println("table name is: ", t_name)
+	}
+	//debug end
 	bat, err := s.cf.NextBatch(s.Ctx)
 	if err != nil {
 		colexecerror.InternalError(err)

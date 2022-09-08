@@ -417,6 +417,7 @@ func mustWrapValuesNode(planCtx *PlanningCtx, specifiedInQuery bool) bool {
 // The error doesn't indicate complete failure - it's instead the reason that
 // this plan couldn't be distributed.
 // TODO(radu): add tests for this.
+// mosquito : rownum
 func checkSupportForPlanNode(node planNode) (distRecommendation, error) {
 	switch n := node.(type) {
 	// Keep these cases alphabetized, please!
@@ -531,7 +532,7 @@ func checkSupportForPlanNode(node planNode) (distRecommendation, error) {
 			return cannotDistribute, err
 		}
 		return rec.compose(canDistribute), nil
-
+		// mosquito : ordinality
 	case *ordinalityNode:
 		// WITH ORDINALITY never gets distributed so that the gateway node can
 		// always number each row in order.

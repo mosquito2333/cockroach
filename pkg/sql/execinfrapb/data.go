@@ -193,6 +193,7 @@ type ProducerMetadata struct {
 	// RowNum corresponds to a row produced by a "source" processor that takes no
 	// inputs. It is used in tests to verify that all metadata is forwarded
 	// exactly once to the receiver on the gateway node.
+	// mosquito : rownum
 	RowNum *RemoteProducerMetadata_RowNum
 	// SamplerProgress contains incremental progress information from the sampler
 	// processor.

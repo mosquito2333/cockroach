@@ -823,12 +823,14 @@ func (b *Builder) buildWithOrdinality(inScope *scope) (outScope *scope) {
 	// See https://www.cockroachlabs.com/docs/stable/query-order.html#order-preservation
 	// for the semantics around WITH ORDINALITY and ordering.
 
+	println("before : ", inScope.expr)
 	input := inScope.expr
 	inScope.expr = b.factory.ConstructOrdinality(input, &memo.OrdinalityPrivate{
 		Ordering: inScope.makeOrderingChoice(),
 		ColID:    col.id,
 	})
 
+	println("after : ", inScope.expr)
 	return inScope
 }
 

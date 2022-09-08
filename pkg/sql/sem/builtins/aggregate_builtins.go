@@ -353,6 +353,11 @@ var aggregates = map[string]builtinDefinition{
 			"Concatenates all selected values using the provided delimiter.", volatility.Immutable, true /* calledOnNullInput */),
 	),
 
+	"list_agg": makeBuiltin(aggProps(),
+		makeAggOverload([]*types.T{types.Any, types.Any}, types.String, newListAggAggregate,
+			"Concatenates all selected values using the provided delimiter.", volatility.Immutable, true /* calledOnNullInput */),
+	),
+
 	"sum_int": makeBuiltin(aggProps(),
 		makeImmutableAggOverload([]*types.T{types.Int}, types.Int, newSmallIntSumAggregate,
 			"Calculates the sum of the selected values."),
@@ -1553,10 +1558,30 @@ func (a *avgAggregate) Size() int64 {
 type concatAggregate struct {
 	singleDatumAggregateBase
 
+	forAny     bool
 	forBytes   bool
 	sawNonNull bool
 	delimiter  string // used for non window functions
 	result     bytes.Buffer
+}
+
+func newListAggAggregate(
+	_ []*types.T, evalCtx *eval.Context, arguments tree.Datums,
+) eval.AggregateFunc {
+	concatAgg := &concatAggregate{
+		singleDatumAggregateBase: makeSingleDatumAggregateBase(evalCtx),
+		forAny:                   true,
+	}
+	if len(arguments) == 1 && arguments[0] != tree.DNull {
+		if delimiter, err := eval.PerformCast(evalCtx, arguments[0], types.String); err != nil {
+			panic(err)
+		} else {
+			concatAgg.delimiter = string(tree.MustBeDString(delimiter))
+		}
+	} else if len(arguments) > 1 {
+		panic(errors.AssertionFailedf("too many arguments passed in, expected < 2, got %d", len(arguments)))
+	}
+	return concatAgg
 }
 
 func newBytesConcatAggregate(
@@ -1589,6 +1614,7 @@ func newStringConcatAggregate(
 }
 
 func (a *concatAggregate) Add(ctx context.Context, datum tree.Datum, others ...tree.Datum) error {
+	evalCtx := eval.Context{Context: ctx}
 	if datum == tree.DNull {
 		return nil
 	}
@@ -1599,7 +1625,13 @@ func (a *concatAggregate) Add(ctx context.Context, datum tree.Datum, others ...t
 		// If this is called as part of a window function, the delimiter is passed in
 		// via the first element in others.
 		if len(others) == 1 && others[0] != tree.DNull {
-			if a.forBytes {
+			if a.forAny {
+				d, err := eval.PerformCast(&evalCtx, others[0], types.String)
+				if err != nil {
+					return err
+				}
+				delimiter = string(tree.MustBeDString(d))
+			} else if a.forBytes {
 				delimiter = string(tree.MustBeDBytes(others[0]))
 			} else {
 				delimiter = string(tree.MustBeDString(others[0]))
@@ -1612,7 +1644,13 @@ func (a *concatAggregate) Add(ctx context.Context, datum tree.Datum, others ...t
 		}
 	}
 	var arg string
-	if a.forBytes {
+	if a.forAny {
+		if temp, err := eval.PerformCast(&evalCtx, datum, types.String); err != nil {
+			return err
+		} else {
+			arg = string(tree.MustBeDString(temp))
+		}
+	} else if a.forBytes {
 		arg = string(tree.MustBeDBytes(datum))
 	} else {
 		arg = string(tree.MustBeDString(datum))

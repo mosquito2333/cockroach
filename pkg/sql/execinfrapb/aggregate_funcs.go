@@ -73,4 +73,5 @@ const (
 	FinalCovarSamp          = AggregatorSpec_FINAL_COVAR_SAMP
 	FinalCorr               = AggregatorSpec_FINAL_CORR
 	FinalSqrdiff            = AggregatorSpec_FINAL_SQRDIFF
+	ListAgg                 = AggregatorSpec_LIST_AGG
 )
